@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Calcanator</string>
+    <style name="Theme.Calcanator" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
