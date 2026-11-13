@@ -535,4 +535,173 @@ class DemoBackend(private val prefs: SharedPreferences) : Backend {
         if (amount <= 0) throw ApiException("Bet must be more than 0.")
         if (amount > u.coins) throw ApiException("Not enough calc coins.")
 
-        var won
+        var won: Boolean
+        var prize = 0L
+        var roll: Int
+        if (game == "flip") {
+            if (pick != "heads" && pick != "tails") throw ApiException("Pick heads or tails.")
+            roll = (0..99).random()
+            won = roll < ceil(settings.winChance * 100).toInt()
+            if (won) prize = floor(amount * settings.payout).toLong()
+        } else if (game == "dice") {
+            val pickNumber = pick.toIntOrNull()
+            if (pickNumber == null || pickNumber !in 1..6) throw ApiException("Pick a number from 1 to 6.")
+            roll = (1..6).random()
+            won = roll == pickNumber
+            if (won) prize = floor(amount * settings.dicePayout).toLong()
+        } else {
+            throw ApiException("Unknown game.")
+        }
+
+        u.coins = u.coins - amount + prize
+        save()
+        return SpinResult(won, roll, prize, u.coins)
+    }
+
+    override suspend fun items(): List<NftItem> =
+        stock.map { NftItem(it.id, it.name, it.price, it.yieldPerDay, it.supply, it.minted) }
+
+    override suspend fun owned(): Map<Int, Int> = mine().toMap()
+
+    override suspend fun buy(itemId: Int, qty: Int): Long {
+        val u = current()
+        if (u.banned) throw ApiException("This account is banned.")
+        if (qty <= 0) throw ApiException("Quantity must be more than 0.")
+        val item = stock.firstOrNull { it.id == itemId } ?: throw ApiException("NFT not found.")
+        if (item.minted + qty > item.supply) throw ApiException("Only ${item.supply - item.minted} left.")
+        val total = item.price * qty
+        if (total > u.coins) throw ApiException("You need $total calc coins.")
+
+        item.minted += qty
+        val m = mine()
+        m[itemId] = (m[itemId] ?: 0) + qty
+        u.coins -= total
+        save()
+        return u.coins
+    }
+
+    override suspend fun sell(itemId: Int, qty: Int): Long {
+        val u = current()
+        if (qty <= 0) throw ApiException("Quantity must be more than 0.")
+        val item = stock.firstOrNull { it.id == itemId } ?: throw ApiException("NFT not found.")
+        val m = mine()
+        val have = m[itemId] ?: 0
+        if (have < qty) throw ApiException("You do not own that many.")
+
+        val refund = floor(item.price * 0.9).toLong() * qty
+        val left = have - qty
+        if (left == 0) m.remove(itemId) else m[itemId] = left
+        item.minted = (item.minted - qty).coerceAtLeast(0)
+        u.coins += refund
+        save()
+        return u.coins
+    }
+
+    override suspend fun claimYield(): Long {
+        val u = current()
+        if (u.banned) throw ApiException("This account is banned.")
+        val m = mine()
+        var earned = 0L
+        stock.forEach { item -> earned += item.yieldPerDay * (m[item.id] ?: 0) }
+        if (earned <= 0) throw ApiException("You own no NFTs yet, so there is nothing to claim.")
+        val now = System.currentTimeMillis()
+        if (u.lastYield > 0 && now - u.lastYield < 24L * 60 * 60 * 1000) {
+            val hours = ((24L * 60 * 60 * 1000 - (now - u.lastYield)) / 3600000L) + 1
+            throw ApiException("Already claimed. Come back in $hours hours.")
+        }
+        u.lastYield = now
+        u.coins += earned
+        save()
+        return earned
+    }
+
+    override suspend fun tiers(): List<SpinTier> =
+        tierList.map { SpinTier(it.id, it.label, it.kind, it.weight, it.payout) }
+
+    override suspend fun spinJackpot(amount: Long): JackpotResult {
+        val u = current()
+        if (u.banned) throw ApiException("This account is banned.")
+        if (amount <= 0) throw ApiException("Bet must be more than 0.")
+        if (amount > u.coins) throw ApiException("Not enough calc coins.")
+
+        val active = tierList.filter { it.weight > 0 }.sortedBy { it.id }
+        val total = active.sumOf { it.weight }
+        if (total <= 0) throw ApiException("The paytable is empty.")
+
+        var roll = (1..total).random()
+        var chosen = active.last()
+        for (tier in active) {
+            if (roll <= tier.weight) {
+                chosen = tier
+                break
+            }
+            roll -= tier.weight
+        }
+
+        val prize = floor(amount * chosen.payout).toLong()
+        u.coins = u.coins - amount + prize
+        save()
+        return JackpotResult(chosen.label, chosen.kind, prize, u.coins)
+    }
+
+    override suspend fun leaderboard(): List<LeaderRow> =
+        users.filter { !it.banned && it.coins > 0 }
+            .sortedByDescending { it.coins }
+            .take(50)
+            .map { LeaderRow(it.email.substringBefore("@"), it.coins) }
+
+    override suspend fun updateTier(tier: SpinTier) {
+        admin()
+        val existing = tierList.firstOrNull { it.id == tier.id }
+            ?: throw ApiException("Tier not found.")
+        existing.weight = tier.weight
+        existing.payout = tier.payout
+        save()
+    }
+
+    override suspend fun listUsers(): List<Profile> {
+        admin()
+        return users.map { toProfile(it) }
+    }
+
+    override suspend fun grant(userId: String, amount: Long): Long {
+        admin()
+        if (amount == 0L) throw ApiException("Amount must not be zero.")
+        val u = users.firstOrNull { it.id == userId } ?: throw ApiException("User not found.")
+        u.coins = (u.coins + amount).coerceAtLeast(0L)
+        save()
+        return u.coins
+    }
+
+    override suspend fun ban(userId: String, banned: Boolean) {
+        val me = admin()
+        if (me.id == userId) throw ApiException("You cannot ban yourself.")
+        val u = users.firstOrNull { it.id == userId } ?: throw ApiException("User not found.")
+        u.banned = banned
+        save()
+    }
+
+    override suspend fun saveSettings(settings: AppSettings) {
+        admin()
+        this.settings = settings
+        save()
+    }
+
+    override suspend fun updateNft(item: NftItem) {
+        admin()
+        val existing = stock.firstOrNull { it.id == item.id } ?: throw ApiException("NFT not found.")
+        existing.price = item.price
+        existing.yieldPerDay = item.yieldPerDay
+        existing.supply = item.maxSupply.coerceAtLeast(existing.minted)
+        save()
+    }
+
+    override suspend fun createNft(name: String, price: Long, yieldPerDay: Long, supply: Int) {
+        admin()
+        if (name.isBlank()) throw ApiException("Give the NFT a name.")
+        if (supply <= 0) throw ApiException("Supply must be more than 0.")
+        val id = (stock.maxOfOrNull { it.id } ?: 0) + 1
+        stock.add(DItem(id, name.trim(), price, yieldPerDay, supply, 0))
+        save()
+    }
+}

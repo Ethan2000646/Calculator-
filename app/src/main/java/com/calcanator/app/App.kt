@@ -606,4 +606,583 @@ private fun CasinoScreen(state: AppState, ui: Ui) {
         )
         Spacer(Modifier.height(8.dp))
         Row(
- 
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            (1..6).forEach { number ->
+                val label = number.toString()
+                val selected = ui.pick == label
+                if (selected) {
+                    Button(
+                        onClick = { state.setPick(label) },
+                        enabled = !ui.busy,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(label) }
+                } else {
+                    OutlinedButton(
+                        onClick = { state.setPick(label) },
+                        enabled = !ui.busy,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(label) }
+                }
+            }
+        }
+    }
+
+    Spacer(Modifier.height(12.dp))
+    OutlinedTextField(
+        value = ui.bet,
+        onValueChange = { state.setBet(it) },
+        label = { Text("Bet") },
+        singleLine = true,
+        enabled = !ui.busy,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(
+        onClick = { if (ui.game == "jackpot") state.spinJackpot() else state.placeBet() },
+        enabled = !ui.busy && ui.bet.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) { Text(if (ui.game == "jackpot") "Spin" else "Bet") }
+
+    ui.jackpot?.let { jackpot ->
+        val reels = remember(jackpot) { reelsFor(jackpot.kind) }
+        Spacer(Modifier.height(10.dp))
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Text(reels.joinToString("   "), fontSize = 26.sp)
+                Text(
+                    if (jackpot.prize > 0) "${jackpot.label}  +${jackpot.prize} calc coins"
+                    else "${jackpot.label}  nothing this time",
+                    fontWeight = FontWeight.Bold,
+                    color = if (jackpot.prize > 0) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error
+                )
+                Text("balance ${jackpot.coins}", fontSize = 13.sp)
+            }
+        }
+    }
+
+    ui.spin?.let { spin ->
+        Spacer(Modifier.height(10.dp))
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Text(
+                    if (spin.win) "WIN  +${spin.prize} calc coins" else "LOST  ${ui.bet} calc coins",
+                    fontWeight = FontWeight.Bold,
+                    color = if (spin.win) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                )
+                if (ui.game == "dice") {
+                    Text("dice rolled ${spin.roll}", fontSize = 13.sp)
+                }
+                Text("balance ${spin.coins}", fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun pickButton(selected: Boolean, label: String, enabled: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, enabled = enabled) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, enabled = enabled) { Text(label) }
+    }
+}
+
+@Composable
+private fun gameTab(state: AppState, ui: Ui, game: String, label: String) {
+    if (ui.game == game) {
+        Button(onClick = { state.setGame(game) }, enabled = !ui.busy) { Text(label) }
+    } else {
+        OutlinedButton(onClick = { state.setGame(game) }, enabled = !ui.busy) { Text(label) }
+    }
+}
+
+private fun reelsFor(kind: String): List<String> {
+    val symbols = listOf("🍒", "🔔", "💎")
+    return when (kind) {
+        "jackpot" -> listOf("💎", "💎", "💎")
+        "triple" -> {
+            val symbol = symbols.random()
+            listOf(symbol, symbol, symbol)
+        }
+        "pair" -> {
+            val symbol = symbols.random()
+            val other = symbols.first { it != symbol }
+            val three = mutableListOf(symbol, symbol, other)
+            three.shuffle()
+            three
+        }
+        else -> symbols.shuffled()
+    }
+}
+
+@Composable
+private fun BoardScreen(state: AppState, ui: Ui) {
+    Text("Leaderboard", fontWeight = FontWeight.SemiBold)
+    Text(
+        "Biggest calc coin holders. Banned accounts are hidden.",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(10.dp))
+
+    if (ui.board.isEmpty()) {
+        Text("Nobody on the board yet.", fontSize = 13.sp)
+    }
+
+    ui.board.forEachIndexed { index, row ->
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("${index + 1}.", fontSize = 13.sp)
+                Text(row.handle, modifier = Modifier.weight(1f), fontSize = 15.sp)
+                Text("${row.coins}", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+    }
+
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(onClick = { state.refresh() }, enabled = !ui.busy) { Text("Refresh") }
+}
+
+@Composable
+private fun NftScreen(state: AppState, ui: Ui) {
+    Text("NFTs", fontWeight = FontWeight.SemiBold)
+    Text(
+        "Buy an NFT to earn calc coins every day. Yield can be claimed once every 24 hours. Selling back pays 90%.",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(
+        onClick = { state.claimYield() },
+        enabled = !ui.busy,
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Claim daily yield") }
+    Spacer(Modifier.height(12.dp))
+
+    ui.items.forEach { item ->
+        val qty = ui.owned[item.id] ?: 0
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Text(item.name, fontWeight = FontWeight.Medium)
+                Text("price ${item.price}  ·  yield ${item.yieldPerDay}/day", fontSize = 13.sp)
+                Text(
+                    buildString {
+                        append("left ${item.left} of ${item.maxSupply}")
+                        if (qty > 0) append("  ·  you own $qty")
+                    },
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = { state.buy(item.id) },
+                        enabled = !ui.busy && !item.soldOut
+                    ) { Text(if (item.soldOut) "Sold out" else "Buy 1") }
+                    if (qty > 0) {
+                        OutlinedButton(
+                            onClick = { state.sell(item.id) },
+                            enabled = !ui.busy
+                        ) { Text("Sell 1") }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun DevScreen(state: AppState, ui: Ui) {
+    var calcRate by remember(ui.settings.calcRate) { mutableStateOf(fmt(ui.settings.calcRate)) }
+    var calcMultiplier by remember(ui.settings.calcMultiplier) { mutableStateOf(fmt(ui.settings.calcMultiplier)) }
+    var winChance by remember(ui.settings.winChance) { mutableStateOf(fmt(ui.settings.winChance)) }
+    var payout by remember(ui.settings.payout) { mutableStateOf(fmt(ui.settings.payout)) }
+    var dicePayout by remember(ui.settings.dicePayout) { mutableStateOf(fmt(ui.settings.dicePayout)) }
+
+    var newName by remember { mutableStateOf("") }
+    var newPrice by remember { mutableStateOf("10000") }
+    var newYield by remember { mutableStateOf("1000") }
+    var newSupply by remember { mutableStateOf("10") }
+
+    var editItem by remember { mutableStateOf<NftItem?>(null) }
+    var editPrice by remember { mutableStateOf("") }
+    var editYield by remember { mutableStateOf("") }
+    var editSupply by remember { mutableStateOf("") }
+
+    var grantTarget by remember { mutableStateOf<Profile?>(null) }
+    var grantAmount by remember { mutableStateOf("1000") }
+
+    var editTier by remember { mutableStateOf<SpinTier?>(null) }
+    var tierWeight by remember { mutableStateOf("") }
+    var tierPayout by remember { mutableStateOf("") }
+
+    Text("Dev panel", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+    Spacer(Modifier.height(10.dp))
+
+    Text("Calculator and casino numbers", fontWeight = FontWeight.SemiBold)
+    Text("win chance is 0 to 1, the rest are multipliers.", fontSize = 12.sp)
+    Spacer(Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = calcRate,
+            onValueChange = { calcRate = it },
+            label = { Text("rate") },
+            singleLine = true,
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        )
+        OutlinedTextField(
+            value = calcMultiplier,
+            onValueChange = { calcMultiplier = it },
+            label = { Text("calc mult") },
+            singleLine = true,
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = winChance,
+            onValueChange = { winChance = it },
+            label = { Text("win chance") },
+            singleLine = true,
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        )
+        OutlinedTextField(
+            value = payout,
+            onValueChange = { payout = it },
+            label = { Text("flip payout") },
+            singleLine = true,
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    OutlinedTextField(
+        value = dicePayout,
+        onValueChange = { dicePayout = it },
+        label = { Text("dice payout") },
+        singleLine = true,
+        enabled = !ui.busy,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(
+        onClick = {
+            val rate = num(calcRate)
+            val mult = num(calcMultiplier)
+            val chance = num(winChance)
+            val pay = num(payout)
+            val dice = num(dicePayout)
+            if (rate == null || mult == null || chance == null || pay == null || dice == null) {
+                state.report("All five fields must be numbers.")
+            } else {
+                state.saveSettings(
+                    AppSettings(
+                        calcRate = rate,
+                        calcMultiplier = mult,
+                        winChance = chance,
+                        payout = pay,
+                        dicePayout = dice,
+                    )
+                )
+            }
+        },
+        enabled = !ui.busy
+    ) { Text("Save numbers") }
+
+    Spacer(Modifier.height(18.dp))
+    Text("Mint an NFT", fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(6.dp))
+    OutlinedTextField(
+        value = newName,
+        onValueChange = { newName = it },
+        label = { Text("name") },
+        singleLine = true,
+        enabled = !ui.busy,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = newPrice,
+            onValueChange = { newPrice = it },
+            label = { Text("price") },
+            singleLine = true,
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        )
+        OutlinedTextField(
+            value = newYield,
+            onValueChange = { newYield = it },
+            label = { Text("yield/day") },
+            singleLine = true,
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = newSupply,
+            onValueChange = { newSupply = it },
+            label = { Text("supply") },
+            singleLine = true,
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        )
+        Button(
+            onClick = {
+                val price = newPrice.trim().toLongOrNull()
+                val yield = newYield.trim().toLongOrNull()
+                val supply = newSupply.trim().toIntOrNull()
+                if (newName.isBlank() || price == null || yield == null || supply == null) {
+                    state.report("Name, price, yield and supply are needed.")
+                } else {
+                    state.createNft(newName, price, yield, supply)
+                }
+            },
+            enabled = !ui.busy,
+            modifier = Modifier.weight(1f)
+        ) { Text("Mint") }
+    }
+
+    Spacer(Modifier.height(18.dp))
+    Text("NFTs", fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(6.dp))
+    ui.items.forEach { item ->
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(10.dp)) {
+                Text(item.name, fontWeight = FontWeight.Medium)
+                Text(
+                    "price ${item.price}  ·  yield ${item.yieldPerDay}/day  ·  ${item.minted}/${item.maxSupply} minted",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(
+                    onClick = {
+                        editItem = item
+                        editPrice = item.price.toString()
+                        editYield = item.yieldPerDay.toString()
+                        editSupply = item.maxSupply.toString()
+                    },
+                    enabled = !ui.busy
+                ) { Text("Edit") }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+
+    Spacer(Modifier.height(18.dp))
+    Text("Jackpot paytable", fontWeight = FontWeight.SemiBold)
+    Text(
+        "weights are relative, payout multiplies the bet",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(6.dp))
+    ui.tiers.forEach { tier ->
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(10.dp)) {
+                Text(tier.label, fontWeight = FontWeight.Medium)
+                Text(
+                    "weight ${tier.weight}  ·  pays ×${fmt(tier.payout)}",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(
+                    onClick = {
+                        editTier = tier
+                        tierWeight = tier.weight.toString()
+                        tierPayout = fmt(tier.payout)
+                    },
+                    enabled = !ui.busy
+                ) { Text("Edit") }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+
+    Spacer(Modifier.height(14.dp))
+    Text("Accounts", fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(6.dp))
+    ui.users.forEach { user ->
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(10.dp)) {
+                Text(user.email, fontWeight = FontWeight.Medium)
+                Text(
+                    buildString {
+                        append("${user.coins} coins")
+                        if (user.isAdmin) append("  ·  dev")
+                        if (user.banned) append("  ·  banned")
+                    },
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            grantTarget = user
+                            grantAmount = "1000"
+                        },
+                        enabled = !ui.busy
+                    ) { Text("Give coins") }
+                    if (user.id != ui.me?.id) {
+                        OutlinedButton(
+                            onClick = { state.ban(user.id, !user.banned) },
+                            enabled = !ui.busy
+                        ) { Text(if (user.banned) "Unban" else "Ban") }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+
+    TextButton(onClick = { state.backToHome() }) { Text("Back") }
+
+    val target = grantTarget
+    if (target != null) {
+        AlertDialog(
+            onDismissRequest = { grantTarget = null },
+            title = { Text("Give coins") },
+            text = {
+                Column {
+                    Text(target.email, fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = grantAmount,
+                        onValueChange = { grantAmount = it },
+                        label = { Text("How many coins") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val amount = grantAmount.trim().toLongOrNull()
+                    if (amount == null || amount == 0L) {
+                        state.report("Enter a whole number of coins.")
+                    } else {
+                        state.grant(target.id, amount)
+                        grantTarget = null
+                    }
+                }) { Text("Give") }
+            },
+            dismissButton = {
+                TextButton(onClick = { grantTarget = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    val editing = editItem
+    if (editing != null) {
+        AlertDialog(
+            onDismissRequest = { editItem = null },
+            title = { Text(editing.name) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = editPrice,
+                        onValueChange = { editPrice = it },
+                        label = { Text("price") },
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = editYield,
+                        onValueChange = { editYield = it },
+                        label = { Text("yield per day") },
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = editSupply,
+                        onValueChange = { editSupply = it },
+                        label = { Text("supply (cannot go below minted)") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val price = editPrice.trim().toLongOrNull()
+                    val yield = editYield.trim().toLongOrNull()
+                    val supply = editSupply.trim().toIntOrNull()
+                    if (price == null || yield == null || supply == null) {
+                        state.report("Price, yield and supply must be numbers.")
+                    } else {
+                        state.updateNft(
+                            editing.copy(
+                                price = price,
+                                yieldPerDay = yield,
+                                maxSupply = supply,
+                            )
+                        )
+                        editItem = null
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editItem = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    val tierBeingEdited = editTier
+    if (tierBeingEdited != null) {
+        AlertDialog(
+            onDismissRequest = { editTier = null },
+            title = { Text(tierBeingEdited.label) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = tierWeight,
+                        onValueChange = { tierWeight = it },
+                        label = { Text("weight") },
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = tierPayout,
+                        onValueChange = { tierPayout = it },
+                        label = { Text("payout multiplier") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val weight = tierWeight.trim().toIntOrNull()
+                    val payout = num(tierPayout)
+                    if (weight == null || payout == null) {
+                        state.report("Weight and payout must be numbers.")
+                    } else {
+                        state.updateTier(tierBeingEdited.copy(weight = weight, payout = payout))
+                        editTier = null
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editTier = null }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+private fun fmt(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
+
+private fun num(text: String): Double? = text.trim().replace(",", ".").toDoubleOrNull()
