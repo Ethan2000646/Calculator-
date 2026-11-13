@@ -1,0 +1,609 @@
+package com.calcanator.app
+
+import android.content.Context
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+
+enum class Screen { Setup, Auth, Home, Dev }
+
+enum class Tab { Calc, Casino, Nfts, Board }
+
+data class Ui(
+    val screen: Screen = Screen.Setup,
+    val tab: Tab = Tab.Calc,
+    val busy: Boolean = false,
+    val error: String? = null,
+    val info: String? = null,
+    val demo: Boolean = false,
+    val backendUrl: String = "",
+    val me: Profile? = null,
+    val settings: AppSettings = AppSettings(),
+    val users: List<Profile> = emptyList(),
+    val items: List<NftItem> = emptyList(),
+    val owned: Map<Int, Int> = emptyMap(),
+    val tiers: List<SpinTier> = emptyList(),
+    val board: List<LeaderRow> = emptyList(),
+    val calcAmount: String = "",
+    val preview: Preview? = null,
+    val bet: String = "",
+    val game: String = "flip",
+    val pick: String = "heads",
+    val spin: SpinResult? = null,
+    val jackpot: JackpotResult? = null,
+)
+
+class AppState(context: Context) {
+    private val prefs = context.getSharedPreferences("calcanator", Context.MODE_PRIVATE)
+    private val session = SessionStore(prefs)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    var ui by mutableStateOf(Ui())
+        private set
+
+    private var backend: Backend? = null
+
+    fun bootstrap() {
+        val demo = prefs.getBoolean("demo", false)
+        val url = prefs.getString("url", "").orEmpty()
+        val key = prefs.getString("key", "").orEmpty()
+        ui = ui.copy(demo = demo, backendUrl = url)
+        backend = when {
+            demo -> DemoBackend(prefs)
+            url.isNotBlank() && key.isNotBlank() -> SupabaseBackend(url, key, session)
+            else -> null
+        }
+        val b = backend ?: return
+        if (b.hasSession()) refresh() else ui = ui.copy(screen = Screen.Auth)
+    }
+
+    fun saveBackend(url: String, key: String, demo: Boolean) {
+        prefs.edit()
+            .putString("url", url.trim())
+            .putString("key", key.trim())
+            .putBoolean("demo", demo)
+            .commit()
+        session.clear()
+        backend = null
+        ui = Ui(demo = demo, backendUrl = if (demo) "" else url.trim())
+        bootstrap()
+    }
+
+    private fun run(doing: String, block: suspend (Backend) -> Unit) {
+        val b = backend ?: return
+        if (ui.busy) return
+        ui = ui.copy(busy = true, error = null, info = doing)
+        scope.launch {
+            try {
+                block(b)
+                ui = if (ui.info == doing) ui.copy(busy = false, info = null) else ui.copy(busy = false)
+            } catch (e: Exception) {
+                ui = ui.copy(busy = false, info = null, error = e.message ?: e.toString())
+            }
+        }
+    }
+
+    private suspend fun loadEverything(b: Backend) {
+        val me = b.me()
+        val settings = b.loadSettings()
+        val items = b.items()
+        val owned = b.owned()
+        val tiers = b.tiers()
+        val board = b.leaderboard()
+        val users = if (me.isAdmin) b.listUsers() else emptyList()
+        ui = ui.copy(
+            screen = Screen.Home,
+            me = me,
+            settings = settings,
+            items = items,
+            owned = owned,
+            tiers = tiers,
+            board = board,
+            users = users,
+        )
+    }
+
+    fun signIn(email: String, password: String) = run("Signing in…") { b ->
+        b.signIn(email.trim(), password)
+        loadEverything(b)
+    }
+
+    fun signUp(email: String, password: String) = run("Creating your account…") { b ->
+        b.signUp(email.trim(), password)
+        loadEverything(b)
+    }
+
+    fun refresh() = run("Refreshing…") { b -> loadEverything(b) }
+
+    fun selectTab(tab: Tab) {
+        ui = ui.copy(tab = tab, error = null, info = null)
+        if (tab != Tab.Calc) refresh()
+    }
+
+    fun setCalcAmount(value: String) {
+        ui = ui.copy(calcAmount = value, preview = null)
+    }
+
+    fun calculate() {
+        val amount = ui.calcAmount.trim().replace(",", ".").toDoubleOrNull()
+        if (amount == null) {
+            report("Type a number first.")
+            return
+        }
+        run("Calculating…") { b -> ui = ui.copy(preview = b.preview(amount)) }
+    }
+
+    fun setBet(value: String) {
+        ui = ui.copy(bet = value)
+    }
+
+    fun setGame(game: String) {
+        ui = ui.copy(
+            game = game,
+            pick = if (game == "flip") "heads" else "1",
+            spin = null,
+            jackpot = null,
+        )
+    }
+
+    fun setPick(pick: String) {
+        ui = ui.copy(pick = pick)
+    }
+
+    fun placeBet() {
+        val amount = ui.bet.trim().toLongOrNull()
+        if (amount == null || amount <= 0) {
+            report("Bet a whole number of coins.")
+            return
+        }
+        run("Rolling…") { b ->
+            val result = b.bet(amount, ui.game, ui.pick)
+            val me = b.me()
+            ui = ui.copy(spin = result, me = me, jackpot = null)
+        }
+    }
+
+    fun spinJackpot() {
+        val amount = ui.bet.trim().toLongOrNull()
+        if (amount == null || amount <= 0) {
+            report("Bet a whole number of coins.")
+            return
+        }
+        run("Spinning…") { b ->
+            val result = b.spinJackpot(amount)
+            val me = b.me()
+            ui = ui.copy(jackpot = result, me = me, spin = null)
+        }
+    }
+
+    fun buy(itemId: Int) = run("Buying…") { b ->
+        b.buy(itemId, 1)
+        loadEverything(b)
+    }
+
+    fun sell(itemId: Int) = run("Selling…") { b ->
+        b.sell(itemId, 1)
+        loadEverything(b)
+    }
+
+    fun claimYield() = run("Claiming…") { b ->
+        val earned = b.claimYield()
+        loadEverything(b)
+        ui = ui.copy(info = "Claimed $earned calc coins.")
+    }
+
+    fun openDev() = run("Opening dev panel…") { b ->
+        val me = b.me()
+        if (!me.isAdmin) throw ApiException("Admins only.")
+        ui = ui.copy(
+            screen = Screen.Dev,
+            me = me,
+            users = b.listUsers(),
+            items = b.items(),
+            tiers = b.tiers(),
+            settings = b.loadSettings(),
+        )
+    }
+
+    fun backToHome() {
+        ui = ui.copy(screen = Screen.Home, error = null, info = null)
+    }
+
+    fun grant(userId: String, amount: Long) = run("Giving coins…") { b ->
+        b.grant(userId, amount)
+        ui = ui.copy(users = b.listUsers(), me = b.me())
+    }
+
+    fun ban(userId: String, banned: Boolean) = run(if (banned) "Banning…" else "Unbanning…") { b ->
+        b.ban(userId, banned)
+        ui = ui.copy(users = b.listUsers())
+    }
+
+    fun saveSettings(settings: AppSettings) = run("Saving…") { b ->
+        b.saveSettings(settings)
+        ui = ui.copy(settings = b.loadSettings())
+    }
+
+    fun updateNft(item: NftItem) = run("Saving NFT…") { b ->
+        b.updateNft(item)
+        ui = ui.copy(items = b.items())
+    }
+
+    fun updateTier(tier: SpinTier) = run("Saving paytable…") { b ->
+        b.updateTier(tier)
+        ui = ui.copy(tiers = b.tiers())
+    }
+
+    fun createNft(name: String, price: Long, yieldPerDay: Long, supply: Int) = run("Minting…") { b ->
+        b.createNft(name, price, yieldPerDay, supply)
+        ui = ui.copy(items = b.items(), info = "Created $name.")
+    }
+
+    fun openSetup() {
+        ui = ui.copy(screen = Screen.Setup, error = null, info = null)
+    }
+
+    fun report(message: String) {
+        ui = ui.copy(error = message, info = null)
+    }
+
+    fun signOut() {
+        val b = backend ?: return
+        scope.launch {
+            try {
+                b.signOut()
+            } catch (_: Exception) {
+            }
+            ui = ui.copy(
+                screen = Screen.Auth,
+                me = null,
+                users = emptyList(),
+                items = emptyList(),
+                owned = emptyMap(),
+                preview = null,
+                spin = null,
+                error = null,
+                info = null,
+            )
+        }
+    }
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val state = AppState(applicationContext)
+        setContent {
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    Root(state)
+                }
+            }
+        }
+        state.bootstrap()
+    }
+}
+
+@Composable
+private fun Root(state: AppState) {
+    val ui = state.ui
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Text("Calcanator", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text(
+            if (ui.demo) "demo · this phone only" else "calc coins",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        ui.me?.let { me ->
+            Spacer(Modifier.height(8.dp))
+            Text("${me.coins} calc coins", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            Text(
+                me.email + if (me.isAdmin) "  ·  dev" else "",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+
+        ui.error?.let { Banner(it, error = true) }
+        ui.info?.let { Banner(it, error = false) }
+        if (ui.busy) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+        }
+
+        when (ui.screen) {
+            Screen.Setup -> SetupScreen(state, ui)
+            Screen.Auth -> AuthScreen(state, ui)
+            Screen.Home -> HomeScreen(state, ui)
+            Screen.Dev -> DevScreen(state, ui)
+        }
+
+        Spacer(Modifier.height(18.dp))
+        if (ui.screen == Screen.Home || ui.screen == Screen.Dev) {
+            TextButton(onClick = { state.signOut() }, enabled = !ui.busy) { Text("Sign out") }
+        }
+    }
+}
+
+@Composable
+private fun Banner(text: String, error: Boolean) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(10.dp)) {
+            Text(
+                text,
+                fontSize = 13.sp,
+                color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+private fun SetupScreen(state: AppState, ui: Ui) {
+    var url by remember { mutableStateOf(ui.backendUrl) }
+    var key by remember { mutableStateOf("") }
+
+    Text("Connect your backend", fontWeight = FontWeight.SemiBold)
+    Text(
+        "Paste your Supabase project URL and anon key. Or use demo mode, which keeps everything on this phone.",
+        fontSize = 13.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(12.dp))
+    OutlinedTextField(
+        value = url,
+        onValueChange = { url = it },
+        label = { Text("Project URL") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = key,
+        onValueChange = { key = it },
+        label = { Text("anon public key") },
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(12.dp))
+    Button(
+        onClick = { state.saveBackend(url, key, false) },
+        enabled = !ui.busy && url.isNotBlank() && key.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Connect") }
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(
+        onClick = { state.saveBackend("", "", true) },
+        enabled = !ui.busy,
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Try demo mode") }
+}
+
+@Composable
+private fun AuthScreen(state: AppState, ui: Ui) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+
+    Text("Sign in", fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = email,
+        onValueChange = { email = it },
+        label = { Text("Email") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = password,
+        onValueChange = { password = it },
+        label = { Text("Password") },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(12.dp))
+    Button(
+        onClick = { state.signIn(email, password) },
+        enabled = !ui.busy && email.isNotBlank() && password.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Sign in") }
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(
+        onClick = { state.signUp(email, password) },
+        enabled = !ui.busy && email.isNotBlank() && password.length >= 6,
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Create account") }
+    if (ui.demo) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Demo logins:\ndev@calcanator.app / dev1234 (dev)\nalex@calcanator.app / alex1234\nsam@calcanator.app / sam1234 (banned)",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    TextButton(onClick = { state.openSetup() }) { Text("Change backend") }
+}
+
+@Composable
+private fun HomeScreen(state: AppState, ui: Ui) {
+    val me = ui.me ?: return
+
+    if (me.banned) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Text("Account banned", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                Text("The dev banned this account, so it cannot play for calc coins.", fontSize = 13.sp)
+            }
+        }
+        return
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val tabs = listOf(Tab.Calc, Tab.Casino, Tab.Nfts, Tab.Board)
+        tabs.forEach { tab ->
+            if (tab == ui.tab) {
+                Button(onClick = { state.selectTab(tab) }, enabled = !ui.busy) { Text(tabName(tab)) }
+            } else {
+                OutlinedButton(onClick = { state.selectTab(tab) }, enabled = !ui.busy) { Text(tabName(tab)) }
+            }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+
+    when (ui.tab) {
+        Tab.Calc -> CalcScreen(state, ui)
+        Tab.Casino -> CasinoScreen(state, ui)
+        Tab.Nfts -> NftScreen(state, ui)
+        Tab.Board -> BoardScreen(state, ui)
+    }
+
+    if (me.isAdmin) {
+        Spacer(Modifier.height(16.dp))
+        OutlinedButton(onClick = { state.openDev() }, enabled = !ui.busy) { Text("Dev panel") }
+    }
+}
+
+private fun tabName(tab: Tab): String = when (tab) {
+    Tab.Calc -> "Calc"
+    Tab.Casino -> "Casino"
+    Tab.Nfts -> "NFTs"
+    Tab.Board -> "Board"
+}
+
+@Composable
+private fun CalcScreen(state: AppState, ui: Ui) {
+    Text("Profit calculator", fontWeight = FontWeight.SemiBold)
+    Text(
+        "What a bet pays out at the current settings. Calculating never adds coins — those have to be earned.",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(10.dp))
+    Text(
+        "rate ×${fmt(ui.settings.calcRate)}   multiplier ×${fmt(ui.settings.calcMultiplier)}",
+        fontSize = 12.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = ui.calcAmount,
+        onValueChange = { state.setCalcAmount(it) },
+        label = { Text("Amount") },
+        singleLine = true,
+        enabled = !ui.busy,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Spacer(Modifier.height(8.dp))
+    Button(
+        onClick = { state.calculate() },
+        enabled = !ui.busy && ui.calcAmount.isNotBlank(),
+        modifier = Modifier.fillMaxWidth()
+    ) { Text("Calculate") }
+
+    ui.preview?.let { preview ->
+        Spacer(Modifier.height(10.dp))
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Text("payout ${preview.payout}", fontWeight = FontWeight.Bold)
+                Text("profit ${preview.profit}", fontSize = 13.sp)
+            }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+    Text("Earn coins in the Casino, or from NFT yield.", fontSize = 12.sp)
+}
+
+@Composable
+private fun CasinoScreen(state: AppState, ui: Ui) {
+    Text("Casino", fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(6.dp))
+
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        gameTab(state, ui, "flip", "Coin flip")
+        gameTab(state, ui, "dice", "Dice")
+        gameTab(state, ui, "jackpot", "Jackpot")
+    }
+    Spacer(Modifier.height(10.dp))
+
+    if (ui.game == "jackpot") {
+        Text(
+            "Three reels, odds set by the paytable.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        val totalWeight = ui.tiers.sumOf { it.weight }
+        ui.tiers.forEach { tier ->
+            val chance = if (totalWeight > 0) tier.weight * 100.0 / totalWeight else 0.0
+            Text(
+                "${tier.label}  ·  ×${fmt(tier.payout)}  ·  ${(chance * 10).roundToInt() / 10.0}%",
+                fontSize = 13.sp
+            )
+        }
+    } else if (ui.game == "flip") {
+        Text(
+            "Win chance ${(ui.settings.winChance * 100).roundToInt()}%  ·  pays ×${fmt(ui.settings.payout)}",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            pickButton(selected = ui.pick == "heads", label = "Heads", enabled = !ui.busy) {
+                state.setPick("heads")
+            }
+            pickButton(selected = ui.pick == "tails", label = "Tails", enabled = !ui.busy) {
+                state.setPick("tails")
+            }
+        }
+    } else {
+        Text(
+            "One number out of six  ·  pays ×${fmt(ui.settings.dicePayout)}",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+ 
